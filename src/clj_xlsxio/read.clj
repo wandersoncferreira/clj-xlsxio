@@ -19,7 +19,7 @@
   ([sheet]
    (if-not (zero? (sheet-next-row sheet))
      (loop
-       [res []]
+         [res []]
        (if-let [cell-value (sheet-next-cell sheet)]
          (recur (conj res cell-value))
          res))
@@ -27,51 +27,64 @@
   ([sheet xlsx]
    (if-not (zero? (sheet-next-row sheet))
      (loop
-       [res []]
+         [res []]
        (if-let [cell-value (sheet-next-cell sheet)]
          (recur (conj res cell-value))
          res))
-     (do 
+     (do
        (sheet-close sheet)
        (close xlsx)
        nil))))
 
-(defmulti read-xlsx (fn [x & args] (type x)))
+(defprotocol IReader
+  (read-xlsx-fast [sheet args] [sheet xlsx args] ""))
 
-(defmethod read-xlsx Pointer
-  ([sheet]
-   (if-let [first-row (read-row sheet)]
-     (lazy-seq (cons first-row (read-xlsx sheet)))
-     nil))
-  ([sheet xlsx]
-   (if-let [first-row (read-row sheet)]
-     (lazy-seq (cons first-row (read-xlsx sheet)))
-     (do 
-       (sheet-close sheet)
-       (close xlsx)
-       nil))))
+(extend-type Pointer
+  IReader
+  (read-xlsx-fast
 
-(defmethod read-xlsx String
-  [filename & {:keys [skip sheet] :or {skip skip-none sheet nil}}]
-  (let [xlsx (open filename)
-        sheet (sheet-open xlsx sheet skip)]
-    (read-xlsx sheet xlsx)))
+    ([sheet args]
+     (when-let [first-row (read-row sheet)]
+       (lazy-seq (cons first-row (read-xlsx-fast sheet args)))))
+    
+    ([sheet xlsx args]
+     (if-let [first-row (read-row sheet)]
+       (lazy-seq (cons first-row (read-xlsx-fast sheet args)))
+       (do
+         (sheet-close sheet)
+         (close xlsx)
+         nil)))))
 
-(defmethod read-xlsx File
-  [^File file & {:keys [skip sheet] :or {skip skip-none sheet nil}}]
-  (let [^String filename (.getAbsolutePath file)]
-    (read-xlsx filename :sheet sheet :skip skip)))
+(extend-type String
+  IReader
+  (read-xlsx-fast [filename args]
+    (let [{:keys [skip sheet] :or {skip skip-none
+                                   sheet nil}} args
+          xlsx (open filename)
+          sheet (sheet-open xlsx sheet skip)]
+      (read-xlsx-fast sheet xlsx args))))
 
-(defmethod read-xlsx BufferedInputStream
-  [^BufferedInputStream stream & {:keys [skip sheet] :or {skip skip-none sheet nil}}]
-  (let [fname (str (gensym))
-        fext (str (gensym))
-        tmp (File/createTempFile fname fext)]
-    (.deleteOnExit tmp)
-    (with-open [in stream
-                out (java.io.FileOutputStream. tmp)]
-      (io/copy in out))
-    (read-xlsx (.getAbsolutePath tmp) :sheet sheet :skip skip)))
+(extend-type File
+  IReader
+  (read-xlsx-fast [file args]
+    (let [^String filename (.getAbsolutePath file)]
+      (read-xlsx-fast filename args))))
+
+(extend-type BufferedInputStream
+  IReader
+  (read-xlsx-fast [stream args]
+    (let [fname (str (gensym))
+          fext (str (gensym))
+          tmp (File/createTempFile fname fext)]
+      (.deleteOnExit tmp)
+      (with-open [in stream
+                  out (java.io.FileOutputStream. tmp)]
+        (io/copy in out))
+      (read-xlsx-fast (.getAbsolutePath tmp) args))))
+
+(defn read-xlsx
+  ([x & args]
+   (read-xlsx-fast x args)))
 
 (defn xlsx->enumerated-maps
   "Returns a lazy sequence of maps, keys are the number of the column in the excel format"
@@ -95,7 +108,7 @@
 
 (defn xlsx->column-title-maps
   "Takes the first row of a xlsx and enumerate every row with the column title.
-  Use the keyword arg :column-fn to pass a functions that are applied on each of the column names, must be a function of 1 arg. 
+  Use the keyword arg :column-fn to pass a functions that are applied on each of the column names, must be a function of 1 arg.
   "
   [lz-seq & {:keys [str-keys column-fn] :or {str-keys false column-fn nil}}]
   (map zipmap
@@ -119,10 +132,10 @@
   [m fs]
   (loop [new-m {}
          ks (into [] (set/intersection (set (keys m)) (set (keys fs))))]
-        (if (empty? ks)
-          (merge m new-m)
-          (recur (assoc new-m (first ks) ((get fs (first ks)) (get m (first ks))))
-                 (rest ks)))))
+    (if (empty? ks)
+      (merge m new-m)
+      (recur (assoc new-m (first ks) ((get fs (first ks)) (get m (first ks))))
+             (rest ks)))))
 
 (comment (coerce-map {:d "extra key" :a "1" :b "10" :c "doasdjasodjas"}
                      {:a #(Long/parseLong %) :b excel-date->java-date :c #(count %)}))
